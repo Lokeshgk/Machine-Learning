@@ -1,0 +1,461 @@
+---
+title: "Visual Cortex Spikes Analysis"
+date: '03/20/2023'
+author: "Lokesh Gorrela Krishna Reddy - 921575559" 
+output:
+  html_document:
+    df_print: paged
+    fig_width: 7
+    fig_height: 6
+    fig_caption: true 
+    theme: journal
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    toc_float: 
+      collapsed: false
+      smooth_scroll: false
+  word_document: default
+  pdf_document: default
+---
+
+## 1. Abstract
+
+The stimuli placed on the left and right screen of the mice have interaction effects on the neural responses in the visual cortex. Neuropixel probes were used to read the neural activity across various brain regions, approximately 30,000 neurons in 42 brain regions were recorded. Only a subset of data that involves neurons from visual cortex were analyzed in this study. A logistic regression classification model is able to predict the outcome of the trial with interaction effects of stimuli and session as random effect with an accuracy of `66%`.
+
+## 2. Introduction
+
+Most mental processes consist of a number of processing steps that are executed sequentially. The timing of the individual mental operations can usually only be estimated indirectly, from the pattern of reaction times. In vision, however many processing steps are associated with the modulation of neural activity in the visual cortex[1]. The visual cortex is the primary cortical region of the brain that receives, integrates and process visual information relayed from the retinas. Each hemisphere has it's own visual cortex, which receives information from the contralateral eye. In other words, the right cortical areas process information from the left eye, and the left processes information from the right eye. The primary purpose of the visual cortex is to receive, segment, and integrate visual information. The processed information from the visual cortex is subsequently sent to other regions of the brain to be analyzed and utilized[2]. 
+
+In the following study we analyze a subset of data collected by Steinmetz et al. (2019) from the experiments conducted on mice to understand how various brain regions engage to accomplish a task that involves making a choice and performing an action. Data from five sessions (sessions 1to 5) from two mice Cori and Forssmann is being used for the analysis.Data is read from the left hemisphere of the mice brain and we focus specifically on the spike trains of neurons in the visual cortex, from the onset of the stimuli to 0.4 seconds post-onset. The primary objectives of the analysis is to understand how the neural activity in the visual cortex is modulated by the two stimuli and how this information can be utilized to predict the outcome of the trial. 
+
+A trial can be best described as follows: on each trial, a mice has access to three different screens left, center and right. The visual stimuli of varying contrast could appear on the left side, right side, both sides or neither side. Mice earned a water reward by turning a wheel with their fore-paw to indicate which side had highest contrast, i.e., the mice has to turn the wheel in the opposite direction of highest contrast to bring the image with highest contrast to the middle screen. If the stimuli was not present on either side, they earned a reward for making a third type of response: keeping the wheel still for 1.5 seconds. Since our data consists of spikes information up until 0.4 seconds from the onset of stimuli, we are neglecting the effects after 0.4 seconds. Let us explore our data set and background of the experiment to better understand our data to answer our questions of interest.
+
+## 3. Background
+
+The data for the study is obtained from the experiments conducted by Steinmetz et al. (2019) to understand the engagement of various brain regions in the mice brain for a task that involves making a choice and performing an action. Neural activity across various brain regions that involves vision, choice, action and behavioral engagement were recorded while performed the task. The set up of trial is already explained in the above section. It is important to mention that all the mice that were used in the study were trained with the same setup before the actual study. While these mice performed the tasks, Neuropixel probes that were inserted into mice brain to read the neural activity across various brain regions.The experiments were performed on a total of 10 mice over 39 sessions, and the neural activity of approximately 30,000 neurons were recorded. Each session comprised several hundred trials, during which visual stimuli were randomly presented to the mouse on two screens positioned on both sides of it. The stimuli varied in terms of contrast levels, which took values in [0, 0.25, 0.5, 1], with 0 indicating the absence of a stimulus. The mice were required to make decisions based on the visual stimuli. A reward or penalty was subsequently administered based on the outcome of their decisions, i.e., water is rewarded for successful outcome.   
+
+### 3.1 Dataset Description
+
+The data set consist of five variables for each trial, namely `feedback_type`: type of the feedback, `1` for success and `-1` for failure, `contrast_left`: contrast of the left stimulus (0, 0.25, 5, 1), `contrast_right`: contrast of the right stimulus (0, 0.25, 5, 1), `date_exp`:  date when experiment was performed ,`time`: centers of the time bins for `spks`, `spks`: numbers of spikes of neurons in the visual cortex in time bins defined in `time`. `spks` is a list of 2D lists informing rows as different neurons and columns as time bins with trial index matching with the index of times in `time` variable.The number of trials and number of neurons that were recorded per each session is different described in the below following table. 
+
+```{r, include=FALSE}
+library(gplots)
+library(ggplot2)
+library(lmerTest)
+require(gridExtra)
+library(dplyr)
+library(car)
+library(knitr)
+library(caret)
+library(ROCR)
+library(pROC)
+```
+
+```{r echo=TRUE, eval=TRUE, include=FALSE}
+session=list()
+for(i in 1:5){
+  session[[i]]=readRDS(paste('C:/Users/Lokesh GK/OneDrive/Documents/STA 207/Main Project/session',i,'.rds',sep=''))
+  print(session[[i]]$mouse_name)
+  print(session[[i]]$date_exp)
+}
+```
+
+```{r, include=FALSE, echo=FALSE}
+for (l in 1:length(session)){
+  ID=l
+  t=0.4 # from Background 
+  
+  n.trials=length(session[[ID]]$time)
+  firingrate=numeric(n.trials)
+  for(i in 1:n.trials){
+    print(session[[ID]]$time[[i]][[39]] - session[[ID]]$time[[i]][[1]])
+  }
+}
+```
+
+```{r echo=TRUE, eval=TRUE, include=FALSE}
+# Obtain the firing rate 
+# averaged over [0,0.4] seconds since stimulus onsets
+# averaged across all neurons 
+data = data.frame(contrast_left=c(), contrast_right=c(), feedback_type=c(), mouse_name=c(), mean_firing_rate=c(), session = c(), date = c())
+
+for (l in 1:length(session)){
+  ID=l
+  t=0.4 # from Background 
+  
+  n.trials=length(session[[ID]]$spks)
+  n.neurons=dim(session[[ID]]$spks[[1]])[1]
+  #print(n.neurons)
+  
+  # Obtain the firing rate 
+  firingrate=numeric(n.trials)
+  for(i in 1:n.trials){
+    firingrate[i]=(sum(session[[ID]]$spks[[i]])/n.neurons)/t
+  }
+  
+  #print(firingrate)
+  df = data.frame(contrast_left=session[[ID]]$contrast_left, 
+                  contrast_right=session[[ID]]$contrast_right, 
+                  feedback_type=session[[ID]]$feedback_type, 
+                  mouse_name=session[[ID]]$mouse_name, 
+                  mean_firing_rate=firingrate,
+                  session=l, 
+                  date=session[[ID]]$date_exp)
+  data = rbind(data, df)
+}
+data$session = as.factor(data$session)
+```
+
+```{r echo=TRUE, eval=FALSE, include=FALSE}
+table(data$contrast_left, data$contrast_right)
+```
+
+
+```{r, echo=FALSE}
+sessions = c("Session 1", "Session 2", "Session 3", "Session 4", "Session 5")
+trials = c(214, 251, 228, 249, 254)
+neurons = c(178, 533, 228, 120, 99)
+mice = c("Cori", "Cori", "Cori", "Forssmann", "Forssmann")
+date = c("2016-12-14", "2016-12-17", "2016-12-18", "2017-11-01", "2017-11-02")
+
+dataset = data.frame("Session"=sessions, "Mice"=mice, "Date"=date, "Number of Trials"=trials, "No of Neurons"=neurons)
+
+```
+
+```{r, echo=FALSE}
+dataset
+```
+
+
+## 4. Exploratory Data analysis
+
+### 4.1 Data Preprocessing
+
+As mentioned in the data set description, each trial has neural spikes information of various number of unidentified neurons from the visual cortex. Since the neurons are unidentified, it is hard to understand how visual cortex responds to individual neurons. It is better to use an aggregate effect of all these unidentified neurons like `mean firing rate` of all the neurons over a specified interval of time (0.4 sec in our case). `Mean firing rate` can be calculated as `Sum of all spikes/number of neurons/time interval`. And also `Mean Firing rate` is used as an important factor for various neurological studies[3]. For each trial now we have mean firing as an important factor rather than unidentified neural spike information. The sample of data is being displayed in the below table.
+
+```{r, warning=FALSE, echo=FALSE}
+head(data)
+```
+
+### 4.2 Descriptive Analysis
+
+In order to answer our research questions of how the visual cortex respond to the stimuli presented on the left and right we explored the data hoping to draw some promising conclusions to come up with a model and to understand how different variables are distributed and associated with each other. The data we have two important factors, left contrast and right contrast of an image and we have four levels of contrast[0, 0.25, 0.5, 1] for each factors. This design fits well for a two-way factorial design or a two-factor ANOVA. As mentioned above mean firing rate of neurons will be used as the outcome variable. From the below main effects plots and interaction plot, different levels of left contrast does not seem to show significant difference in their mean values but higher contrasts have higher means, where as there is significant mean difference among the levels in right contrast, the interaction plot shows significant interaction effect as well since the lines are not parallel to each other.
+
+```{r, echo=FALSE}
+data$contrast_left = as.factor(data$contrast_left)
+data$contrast_right = as.factor(data$contrast_right)
+
+options(repr.plot.width=20, repr.plot.height=15)
+
+#set_plot_dimensions(10, 5)
+
+par(mfrow=c(1,3))
+# main effects plots of ethnicity and occupation
+plotmeans(mean_firing_rate ~ as.factor(contrast_left), data=data, xlab="contrast_left",ylab = "mean_firing_rate",main="Main effect, Left Contrast")
+
+plotmeans(mean_firing_rate ~ as.factor(contrast_right), data=data, xlab="contrast_right",ylab = "mean_firing_rate",main="Main effect, Right Contrast")
+
+interaction.plot(data$contrast_left, data$contrast_right, data$mean_firing_rate,type="l", xlab = "Left contrast", ylab="Mean Firing Rate",trace.label = "Right contrast", main="Interaction effects")
+
+```
+
+From the below distribution plots for each mice, each session and mice + session. Plot 1 shows mean firing rate of two different mice used in the study, and Plot 2 shows firing rate for each session. It is evident from the plots that different mice have different firing rates as well as different sessions have a very different firing rate. We can conclude from this observation that our outcome variable is affected by the mice being studied or session being selected from data for analysis.
+
+Plot 3 show firing rate distribution for mice Cori among the sessions it was being studied, plot 4 shows the firing rate for mice Forssmann among different sessions it was being studied. It is clear from these plots that as sessions progress, there is a decline in the mean firing rate.The mice might be tired in the progressive sessions, with their head cut open and neural probes inserted in them.
+
+```{r, echo=FALSE}
+
+plot1 <- ggplot(data, aes(x=mean_firing_rate, fill=mouse_name)) + geom_histogram(binwidth=.5, alpha=.5, position="identity") + labs(title = "Firing rate of different mice")
+
+plot2 <- ggplot(data, aes(x=mean_firing_rate, fill=session)) + geom_histogram(binwidth=.5, alpha=.5, position="identity") + labs(title = "Firing rate of different sessions")
+
+cori = data[data$mouse_name == "Cori", ]
+
+not_cori = data[data$mouse_name != "Cori", ]
+
+
+plot3 <- ggplot(cori, aes(x=mean_firing_rate, fill=session)) + geom_histogram(binwidth=.5, alpha=.4, position="identity") + labs(title = "Cori in different sessions")
+
+plot4 <- ggplot(not_cori, aes(x=mean_firing_rate, fill=session)) + geom_histogram(binwidth=.5, alpha=.4, position="identity") + labs(title = "Forssmann in different sessions")
+
+#grid.arrange(plot3, plot4, ncol=2)
+
+grid.arrange(plot1, plot2,plot3, plot4, ncol=2, nrow=2)
+
+```
+
+The below plots shows the success rate for left contrast with respect to each of the right contrast and vice versa. There doesn't seem to be a very clear pattern visually but on deeper investigation we can find a pattern. Zero contrast on both sides as well as zero contrast on one side and a non zero contrast on other side seem to show a good success rate when compared to all other contrasts. And a contrast that is not close to the contrast on opposite side also seem to provide good success rates. For example 0-contrast on left and 0.5, 1-contrast on right seem to provide good success rate than the 0.25-contrast on the right.
+
+```{r, echo=FALSE}
+bar = data[order(data$contrast_left, data$contrast_right),]
+
+bar$feedback_type[bar$feedback_type == -1] = 0
+
+success_rate = bar %>% group_by(contrast_left, contrast_right) %>% summarise(success=round(mean(feedback_type)*100, 2), .groups = 'drop') %>% as.data.frame()
+
+#success_rate
+
+lc <- ggplot(data=success_rate, aes(x=contrast_left, y=success, fill=contrast_right)) +
+geom_bar(stat="identity",position=position_dodge()) + geom_text(aes(label=success), vjust=1.6, color="white", position = position_dodge(0.9), size=2.2)+
+scale_fill_brewer(palette="Paired") + theme_minimal() 
+
+rc <- ggplot(data=success_rate, aes(x=contrast_right, y=success, fill=contrast_left)) +
+geom_bar(stat="identity",position=position_dodge()) + geom_text(aes(label=success), vjust=1.6, color="white", position = position_dodge(0.9), size=2.2)+
+scale_fill_brewer(palette="Paired") + theme_minimal() 
+
+grid.arrange(lc, rc, nrow=2)
+```
+
+
+```{r, echo=FALSE, include=FALSE}
+success_rate_right = bar %>% group_by(contrast_right) %>% summarise(success=round(mean(feedback_type)*100, 2), .groups = 'drop') %>% as.data.frame()
+
+success_rate_left = bar %>% group_by(contrast_left) %>% summarise(success=round(mean(feedback_type)*100, 2), .groups = 'drop') %>% as.data.frame()
+
+#success_rate
+
+right_success <- ggplot(data=success_rate_right, aes(x=contrast_right, y=success)) +
+geom_bar(stat="identity",position=position_dodge()) + geom_text(aes(label=success), vjust=1.6, color="white", position = position_dodge(0.9), size=2.2)+
+scale_fill_brewer(palette="Paired") + theme_minimal() 
+
+
+left_success <- ggplot(data=success_rate_left, aes(x=contrast_left, y=success)) +
+geom_bar(stat="identity",position=position_dodge()) + geom_text(aes(label=success), vjust=1.6, color="white", position = position_dodge(0.9), size=2.2)+
+scale_fill_brewer(palette="Paired") + theme_minimal() 
+
+grid.arrange(right_success, left_success, ncol=2)
+```
+
+## 5. Inferential analysis
+
+A anova model can be set up to formulate statistically sound hypothesis that aligns with the research objective, to determine if the left and right stimuli have additive effects or interaction effects on the neural responses. From above descriptive analysis, it is evident that different mouse have different spike rate and spikes rate is different among various sessions as well. This evidently shows that there is some random effect of mice or sessions on the analysis, and the experiment design resembles a split plot design. We can implement a mixed effects two way anova model with left and right contrast as fixed effects and session as random effects. 
+Model can be assumed as $Y_{ijkl}=\mu+\alpha_i+\beta_j+(\alpha\beta)_{ij}+\delta_{k(i)}+\epsilon_{ijk}$, where $\epsilon_{ijkl}$ is $i.i.d \sim N(0, \sigma^2)$, and $\delta_{k(i)}$ is $i.i.d \sim N(0, \sigma^2_{\delta})$.
+
+where,
+
+* $\mu$ - overall mean
+* $\alpha_i$ - is the (fixed) effect of left contrast, i= 1,2,3,4
+* $\beta_j$ - is the (fixed) effect of right contrast, j=1,2,3,4
+* $(\alpha\beta_{ij})$ - is the corresponding interaction (fixed) effect
+* $\delta_{k(i)}$  is the random effect of session, k=1,2,3,4,5
+
+
+To answer the primary question of how do neurons in the visual cortex respond to the stimuli on left and right, we can test whether left and right stimuli have additive effects on the neural response or if right and left stimuli have interaction effects on the neural responses. I have built two models with with left contrast and right contrast as fixed effects and a random intercept is included for each session. A full model with interaction terms and a reduced model without interaction terms. I have conducted an F-test to determine whether the interaction term is significant or can it be dropped. Adding the interaction term to the model with just additive effects significantly improves the model fit and it is evident from the p-value: 0.041 (< $\alpha$=0.05) from the anova table.
+Therefore we can conclude that there is a clear indication that left and right stimuli have interaction effects on the neural response for the chosen experiment of initiating an action based on the stimuli.
+
+`Reduced_model` - model with additive effects,
+`Full_model` - model with interaction effects
+
+```{r, echo=FALSE, results=FALSE, error=FALSE, warning=FALSE, include=FALSE}
+Full_model = lmer(mean_firing_rate ~ contrast_right * contrast_left + (1|session), data = data, REML = TRUE)
+
+summary(Full_model)
+```
+
+```{r, echo=FALSE, results=FALSE}
+anova(Full_model)
+```
+
+```{r, echo=FALSE, results=FALSE}
+Reduced_model = lmer(mean_firing_rate ~ contrast_left + contrast_right + (1|session), data = data, REML = TRUE)
+
+summary(Reduced_model)
+```
+
+```{r, echo=FALSE, results=FALSE}
+anova(Reduced_model, type="III")
+```
+
+```{r, echo=FALSE, warning=FALSE, error=FALSE}
+compare_data = anova(Reduced_model, Full_model)
+
+kable(compare_data, digits = 3, format = "markdown", caption = "ANOVA table")
+
+```
+
+## 6. Sensitivity analysis
+
+Since we came up with a model with interaction terms in the inferential analysis section, let us explore how well the model assumptions are holding up. The model assumptions that we have are the constant variance of error terms and normality of error terms. From the below residuals plot and normal QQ-plot it is evident that residuals follow a distribution close to normal distribution, but not a perfect one. Visual inspection, described in the previous section is usually unreliable. It's possible to use a significant test comparing the sample distribution to a normal one in order to ascertain whether data show or not a serious deviation of normality.I used Shapiro-Wilk test was used to conduct normality test. The p-value from the Shapiro-wilk test is p = 1.91e-09, which is less than 0.05 which is the significance value of our study. From normality test we can conclude that distributions were significantly non-normal for the variables residuals (W = 0.9857, p < 0.01) and Kolmogorov-Smirnov test shows that sample does not follow a normal distribution (D = 0.12356, p-value = 2.22e-16). Well, the statistical test proves that distribution is not normal where as visual plots show the error terms follow a distribution close to normal distribution. This can be fixed by transforming the response variable. 
+
+```{r, echo=FALSE, results='hide'}
+par(mfrow=c(1,2))
+
+hist(residuals(Full_model))
+
+qqPlot(residuals(Full_model))
+
+```
+
+```{r, echo=FALSE, include=FALSE}
+shapiro.test(residuals(Full_model))
+```
+
+```{r, warning=FALSE, echo=FALSE, include=FALSE}
+#kstest = ks.test(residuals(Full_model), "pnorm")
+
+#kstest
+```
+
+The second important assumption we made is the constant variance across all error terms. From the `Residuals vs Fitted Values` plot there doesn't seem to be any violations to the Homoscedasticity assumption, where as across different sessions there seem to be an non constant variance and can be seen in the below graphs. If there is a violation of homoscedasticity we can fit a model transforming the response variable.
+
+
+```{r, echo=FALSE}
+par(mfrow = c(1,2))
+
+plot(Full_model, resid(., scaled=TRUE) ~ fitted(.), abline = 0, pch=16, xlab="Fitted values",ylab="Standardised residuals")
+
+plot(Full_model, resid(., scaled=TRUE) ~ fitted(.)| session, abline = 0,pch=16,xlab="Fitted values",ylab="Standardised residuals")
+```
+
+
+## 7. Predictive modeling
+
+We already know that the outcome of the trial is described either a success (+1) or a failure (-1). So the problem boils down to a binary classification problem. A binomial logistic regression model can be used to classify whether the trail as per the contrasts is a success or a failure. I have encoded the failure to '0' from '-1'. 
+
+Model is constructed with feedback type as outcome and left contrast, right contrast with interaction effects and session as a random effect using the function `glmer`. The first 100 rows of the data is kept aside to analyze the model performance.
+
+The remaining data is split into 70/30 training and testing set. Two models were built considering assuming that both the mice have same intellectual capabilities and other model for mice Cori alone. The accuracy of the models with their own respective test sets is `61%` for a model where both the mice are considered the same and AUC is `0.61`. For the model where data for mice Cori is used we have an accuracy of `63%` and AUC is `0.65`
+
+The accuracy of the Whole model using the first 100 rows of data is `66%` and accuracy of Cori model is `72%`. From the above results it is evident that individual models for individual mice seem to perform better than a model that use the data of all mice.
+
+```{r, echo=FALSE, include=FALSE}
+model_data = data[-c(1:100), ]
+
+test_data = data[1:100, ]
+
+model_data$feedback_type[model_data$feedback_type == -1] = 0
+test_data$feedback_type[test_data$feedback_type == -1] = 0
+
+model_data$feedback_type <- as.factor(model_data$feedback_type)
+test_data$feedback_type <- as.factor(test_data$feedback_type)
+```
+
+
+
+```{r, warning=FALSE, echo=FALSE, include=FALSE}
+
+set.seed(123)
+
+#train_control <- trainControl(method = "cv", number = 10)
+
+#pred_model <- train(feedback_type ~ contrast_left * contrast_right,
+#               data = model_data,
+#               trControl = train_control,
+#               method = "glm",
+#               family=binomial())
+
+#summary(pred_model)
+
+sample <- sample(c(TRUE, FALSE), nrow(model_data), replace=TRUE, prob=c(0.7,0.3))
+train  <- model_data[sample, ]
+test   <- model_data[!sample, ]
+
+pred_model <- glmer(formula = feedback_type ~ contrast_left * contrast_right + (1|session) , family = binomial(link = "logit"), data = train)
+
+fitted.results <- predict(pred_model, newdata=test, type='response')
+#print(fitted.results)
+predicted_values <- ifelse(fitted.results > 0.5,1,0)
+```
+
+
+```{r, echo=FALSE, warning=FALSE}
+p <- prediction(fitted.results, test$feedback_type)
+prf <- performance(p, measure = "tpr", x.measure = "fpr")
+
+auc <- performance(p, measure = "auc")
+auc <- auc@y.values[[1]]
+#round(auc, 2)
+#prf
+```
+
+```{r, echo=FALSE, include=FALSE}
+misClasificError <- mean(predicted_values != test$feedback_type)
+
+#print(paste('Accuracy',1 - round(misClasificError, 2)))
+
+```
+
+```{r, warning=FALSE, echo=FALSE, include=FALSE}
+
+set.seed(123)
+
+#train_control <- trainControl(method = "cv", number = 10)
+
+#pred_model <- train(feedback_type ~ contrast_left * contrast_right,
+#               data = model_data,
+#               trControl = train_control,
+#               method = "glm",
+#               family=binomial())
+
+#summary(pred_model)
+cori_data = model_data[model_data$mouse_name == "Cori",]
+
+sample_cori <- sample(c(TRUE, FALSE), nrow(cori_data), replace=TRUE, prob=c(0.7,0.3))
+train_cori  <- cori_data[sample_cori, ]
+test_cori   <- cori_data[!sample_cori, ]
+
+pred_model_cori <- glmer(formula = feedback_type ~ contrast_left * contrast_right + (1|session) , family = binomial(link = "logit"), data = train_cori)
+
+fitted.results.cori <- predict(pred_model_cori, newdata=test_cori, type='response')
+#print(fitted.results)
+predicted_values_cori <- ifelse(fitted.results.cori > 0.5,1,0)
+```
+
+
+```{r, echo=FALSE, warning=FALSE}
+p_cori <- prediction(fitted.results.cori, test_cori$feedback_type)
+prf_cori <- performance(p_cori, measure = "tpr", x.measure = "fpr")
+
+auc_cori <- performance(p_cori, measure = "auc")
+auc_cori <- auc_cori@y.values[[1]]
+#round(auc_cori, 2)
+
+par(mfrow=c(1,2))
+plot(prf, main="Whole model, AUC = 0.61")
+plot(prf_cori, main="Cori model, AUC = 0.65")
+
+```
+
+```{r, echo=FALSE, include=FALSE}
+misClasificError_cori <- mean(predicted_values_cori != test_cori$feedback_type)
+
+print(paste('Accuracy',1 - round(misClasificError_cori, 2)))
+
+```
+
+```{r,  echo=FALSE, include=FALSE}
+# Test using the first 100 rows
+main.results <- predict(pred_model, newdata=test_data, type='response')
+#print(fitted.results)
+main.results <- ifelse(main.results > 0.5,1,0)
+
+misClasificError_main <- mean(main.results != test_data$feedback_type)
+
+print(paste('Main model Accuracy',1 - round(misClasificError_main, 2)))
+
+
+
+main.results.cori <- predict(pred_model_cori, newdata=test_data, type='response')
+#print(fitted.results)
+main.results.cori <- ifelse(main.results.cori > 0.5,1,0)
+
+misClasificError_main_cori <- mean(main.results.cori != test_data$feedback_type)
+
+print(paste('Cori model Accuracy',1 - round(misClasificError_main_cori, 2)))
+```
+
+## 8. Discussion
+
+For the experiment of initiating an action based on the stimuli presented on two sides of a mice, we can conclude that both the stimuli have interaction effects on the neural response in the visual cortex. ANOVA model with mixed effects is used to understand if neural responses was effected by additive effects of stimuli or by interaction effects. The output was quite obvious from the trial setup of initiating an action based on both the stimuli. Any better rewards like cheese other than water might have reaped better results. We can perform the same experiment with better rewards to understand the success rate. Logistic regression with mixed effects is used for prediction, there is a future scope for using better classification model.
+
+
+## Reference {.unnumbered}
+
+1.  Neuronal Activity in the Visual Cortex Reveals the Temporal Order of Cognitive Operations Sancho I. Moro, Michiel Tolboom, Paul S. Khayat, Pieter R. Roelfsema Journal of Neuroscience 1 December 2010, 30 (48) 16293-16303; DOI: 10.1523/JNEUROSCI.1256-10.2010
+
+2. https://www.ncbi.nlm.nih.gov/books/NBK482504/
+
+3. Hengen KB, Lambo ME, Van Hooser SD, Katz DB, Turrigiano GG. Firing rate homeostasis in visual cortex of freely behaving rodents. Neuron. 2013 Oct 16;80(2):335-42. doi: 10.1016/j.neuron.2013.08.038. PMID: 24139038; PMCID: PMC3816084.
+
+4. Steinmetz, N.A., Zatka-Haas, P., Carandini, M. et al. Distributed coding of choice, action and engagement across the mouse brain. Nature 576, 266--273 (2019). <https://doi.org/10.1038/s41586-019-1787-x>
